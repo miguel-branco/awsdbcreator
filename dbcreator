@@ -1,0 +1,107 @@
+#!/usr/bin/python
+import argparse
+import json
+import time
+from uuid import uuid4
+
+import psycopg2
+
+from boto.sqs.connection import SQSConnection
+from boto.sqs.message import Message
+
+# TODO: 
+# - Test DB connection on startup and fail gracefully
+# - Forbid 'localhost' as an argument and put current public DNS name automatically.
+#   Remember that name is sent and used on the server-side!
+
+sqs_conn = SQSConnection()
+
+db_creator_queue = sqs_conn.get_queue('DBCreatorQueueV1')
+
+parser = argparse.ArgumentParser()
+parser.add_argument("-H", "--host", type=str, help="Hostname", default="localhost")
+parser.add_argument("-P", "--port", type=int, help="Port", default=5432)
+parser.add_argument("-u", "--user", type=str, help="Username", default=None)
+parser.add_argument("-p", "--password", type=str, help="Password", default=None)
+parser.add_argument("-d", "--dbname", type=str, help="Database", default=None)
+parser.add_argument("-i", "--interval", type=int, help="Interval (in seconds) between checking queue state", default=30)
+parser.add_argument("-t", "--threshold", type=int, help="Threshold (nr of requests) under which more requests are added", default=2)
+
+def get_conn_str(dbname=None):
+    conn = ""
+    
+    if dbname:
+        conn += " dbname=%s" % dbname
+    elif args.dbname:
+        conn += " dbname=%s" % args.dbname
+
+    if args.host:
+        conn += " host=%s" % args.host
+    if args.port:
+        conn += " port=%s" % args.port
+    if args.user:
+        conn += " user=%s" % args.user
+    if args.password:
+        conn += " password=%s" % args.password
+    print conn
+    return conn.strip()
+
+def generate_uuid():
+    return str(uuid4()).replace('-', '')
+
+def create_session_db(args):
+    session_dbname = 'db%s' % generate_uuid()
+    with psycopg2.connect(get_conn_str()) as conn:
+        conn.set_isolation_level(0)
+
+        with conn.cursor() as cur:
+            cur.execute("CREATE DATABASE %s" % session_dbname)
+    return session_dbname
+
+def init_session_db(session_dbname, args):
+    with psycopg2.connect(get_conn_str(session_dbname)) as conn:
+        conn.set_isolation_level(0)
+
+        with conn.cursor() as cur:
+            cur.execute("CREATE EXTENSION IF NOT EXISTS multicorn")
+            cur.execute("CREATE SERVER rawfdw FOREIGN DATA WRAPPER multicorn OPTIONS (wrapper 'rawfdw.RawForeignDataWrapper')")
+
+def get_db_connection_info(session_dbname, args):
+    schema = 'db%s' % generate_uuid()
+    user = 'user%s' % generate_uuid()
+    password = '%s' % generate_uuid()
+    with psycopg2.connect(get_conn_str(session_dbname)) as conn:
+        conn.set_isolation_level(0)
+
+        with conn.cursor() as cur:
+            cur.execute("CREATE USER %s WITH PASSWORD '%s'" % (user, password))
+            cur.execute("CREATE SCHEMA %s AUTHORIZATION %s" % (schema, user))
+            cur.execute("GRANT CONNECT ON DATABASE %s TO %s" % (session_dbname, user))
+            cur.execute("GRANT USAGE ON FOREIGN DATA WRAPPER multicorn TO %s" % user)
+            cur.execute("GRANT USAGE ON FOREIGN SERVER rawfdw TO %s" % user)
+            cur.execute("ALTER USER %s SET search_path to %s, public" % (user, schema))
+
+    return dict(host=args.host,
+        port=args.port,
+        dbname=session_dbname,
+        user=user,
+        password=password, 
+        schema=schema)
+
+def execute(args):
+    session_dbname = create_session_db(args)
+    init_session_db(session_dbname, args)
+    while True:
+        nmessages = int(db_creator_queue.get_attributes()['ApproximateNumberOfMessages'])
+        if nmessages < args.threshold:
+            for i in xrange(0, args.threshold - nmessages):
+                db_info = get_db_connection_info(session_dbname, args)
+                print 'Created database ', db_info
+                m = Message()
+                m.set_body(json.dumps(db_info))
+                db_creator_queue.write(m)
+        time.sleep(args.interval)
+    
+if __name__ == '__main__':
+    args = parser.parse_args()
+    execute(args)
