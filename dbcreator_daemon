@@ -1,3 +1,0 @@
-#!/bin/sh
-PUBLIC_HOSTNAME=`curl http://169.254.169.254/latest/meta-data/public-hostname`
-nohup dbcreator -H $PUBLIC_HOSTNAME -P 5432 -u rawuser -p 1234 -d rawdb > /dev/null 2>&1 &
