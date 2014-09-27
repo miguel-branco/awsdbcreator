@@ -9,6 +9,8 @@ Whenever this number drops under a threshold, new databases are automatically cr
 
 # Databases vs Schemas
 
-The script does not actually continuously create PostgreSQL databases.
-Instead, it creates a single new database at startup and then continuously create schemas within that database.
-This is done to circumvent a PostgreSQL limitation: PostgreSQL does not cope well with a very large number of databases but copes well with a very large number of schemas within a database.
+The script does not actually create PostgreSQL databases.
+
+Instead, it creates a single new database at startup and then creates _schemas_ within that database.
+
+Schemas are used to circumvent a PostgreSQL limitation: PostgreSQL does not cope well with a very large number of databases but copes well with a very large number of schemas within a database.
